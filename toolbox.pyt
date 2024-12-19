@@ -64,15 +64,37 @@ class TransferAttributesTool(object):
         param3.value = False  # Default to disabled
         params.append(param3)
 
-        # Output Parameter (optional, e.g., status message)
+        # Parameter 5: Refresh Geodatabase Version Option
         param4 = arcpy.Parameter(
+            displayName="Refresh Geodatabase Version",
+            name="refresh_version",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param4.value = False  # Default to disabled
+        params.append(param4)
+
+        # Parameter 6: Enable Undo/Redo Option
+        param5 = arcpy.Parameter(
+            displayName="Enable Undo/Redo",
+            name="enable_undo_redo",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param5.value = False  # Default to disabled
+        params.append(param5)
+
+        # Output Parameter (optional, e.g., status message)
+        param6 = arcpy.Parameter(
             displayName="Output Message",
             name="output_message",
             datatype="String",
             parameterType="Derived",
             direction="Output"
         )
-        params.append(param4)
+        params.append(param6)
 
         return params
 
@@ -86,6 +108,8 @@ class TransferAttributesTool(object):
         gdb_source_layer = parameters[1].valueAsText
         refresh_layers = parameters[2].valueAsText.lower() == 'true'
         refresh_sde = parameters[3].valueAsText.lower() == 'true'
+        refresh_version = parameters[4].valueAsText.lower() == 'true'
+        enable_undo_redo = parameters[5].valueAsText.lower() == 'true'
 
         try:
             # Create feature layers
@@ -118,7 +142,7 @@ class TransferAttributesTool(object):
 
             # Start an edit session for the GeoDatabase Source
             edit = arcpy.da.Editor(workspace)
-            edit.startEditing(False, True)  # Start edit session with undo/redo disabled
+            edit.startEditing(enable_undo_redo, True)  # Start edit session with undo/redo option based on parameter
             edit.startOperation()  # Start an edit operation
 
             try:
@@ -139,7 +163,14 @@ class TransferAttributesTool(object):
                         row[0] = gps_geometry  # Replace geometry
                         cursor.updateRow(row)
 
-                arcpy.AddMessage("Attributes and geometry successfully transferred.")
+                # Mark the GPS point as audited
+                if "audited" in gps_fields:
+                    with arcpy.da.UpdateCursor(gps_selection, ["Audited"]) as cursor:
+                        for row in cursor:
+                            row[0] = "True"  # Set audited to True
+                            cursor.updateRow(row)
+
+                arcpy.AddMessage("Attributes and geometry successfully transferred and GPS point marked as audited.")
 
             except Exception as e:
                 edit.abortOperation()  # Abort the operation on error
@@ -153,7 +184,7 @@ class TransferAttributesTool(object):
                 arcpy.RefreshCatalog(workspace)
                 arcpy.AddMessage("File Geodatabase or Folder has been refreshed.")
             else:
-                arcpy.AddMessage("No refresh needed for Enterprise Geodatabase (.sde).")
+                arcpy.AddMessage("No refresh needed for Enterprise Geodatabase.")
 
             # Optionally refresh layers in the map
             if refresh_layers:
@@ -172,7 +203,11 @@ class TransferAttributesTool(object):
             if refresh_sde:
                 self.refresh_single_sde_connection(gdb_source_layer)
 
-            arcpy.SetParameterAsText(4, "Transfer Completed")
+            # Optionally refresh the geodatabase version
+            if refresh_version:
+                self.refresh_geodatabase_version(gdb_source_layer)
+
+            arcpy.SetParameterAsText(6, "Transfer Completed")
 
         except Exception as e:
             arcpy.AddError(f"Error occurred: {e}")
@@ -188,7 +223,6 @@ class TransferAttributesTool(object):
         
         if hasattr(desc, "catalogPath"):
             catalog_path = desc.catalogPath
-
             if ".sde" in catalog_path:
                 sde_index = catalog_path.lower().find(".sde")
                 workspace_path = catalog_path[:sde_index + 4]  # Include ".sde"
@@ -220,6 +254,26 @@ class TransferAttributesTool(object):
                     except Exception as e:
                         arcpy.AddWarning(f"Failed to refresh SDE connection for layer '{lyr.name}': {str(e)}")
         arcpy.AddWarning("No matching SDE layer found to refresh.")
+
+    @staticmethod
+    def refresh_geodatabase_version(workspace_path):
+        """Refresh the version of the geodatabase for the specified workspace."""
+        try:
+            # Connect to the geodatabase as a versioned database
+            connection = arcpy.Describe(workspace_path)
+            if hasattr(connection, "connectionProperties"):
+                version_name = connection.connectionProperties.get("versionName", None)
+                if version_name:
+                    arcpy.AddMessage(f"Refreshing version: {version_name}")
+                    # Use ChangeVersion to refresh the version in the current session
+                    arcpy.management.ChangeVersion(workspace_path, version_name)
+                    arcpy.AddMessage(f"Version {version_name} refreshed successfully.")
+                else:
+                    arcpy.AddWarning("No version name found in the connection properties.")
+            else:
+                arcpy.AddWarning("Connection does not support version management.")
+        except Exception as e:
+            arcpy.AddWarning(f"Failed to refresh geodatabase version: {str(e)}")
 
     def updateParameters(self, parameters):
         """Modify parameter values before internal validation."""
